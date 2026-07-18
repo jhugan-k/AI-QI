@@ -58,3 +58,23 @@ CREATE TABLE IF NOT EXISTS weather (
 
 CREATE INDEX IF NOT EXISTS weather_station_time_idx
     ON weather (station_id, measured_at DESC);
+
+-- Model predictions. target_time = the hour being forecast; generated_at = when
+-- the forecast was produced (its "vintage"). Both are needed so Part 5 can score
+-- "the forecast made yesterday for today" against the actual reading.
+CREATE TABLE IF NOT EXISTS forecasts (
+    id            BIGSERIAL PRIMARY KEY,
+    station_id    INTEGER NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
+    pollutant     TEXT NOT NULL,
+    target_time   TIMESTAMPTZ NOT NULL,
+    yhat          DOUBLE PRECISION,
+    yhat_lower    DOUBLE PRECISION,
+    yhat_upper    DOUBLE PRECISION,
+    model_version TEXT,
+    generated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT forecasts_unique UNIQUE (station_id, pollutant, target_time, generated_at)
+);
+
+CREATE INDEX IF NOT EXISTS forecasts_station_target_idx
+    ON forecasts (station_id, pollutant, target_time DESC);
