@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16
+    container_name: aiqi-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aiqi
+      POSTGRES_PASSWORD: aiqi_dev_password
+      POSTGRES_DB: aiqi
+    ports:
+      - "5433:5432"   # host 5433 -> container 5432 (5432 taken by another project)
+    volumes:
+      - aiqi_pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiqi -d aiqi"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  aiqi_pgdata:
