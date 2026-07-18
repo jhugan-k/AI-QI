@@ -191,6 +191,11 @@ function lineChart(container, series, opts = {}) {
     svg.appendChild(el('path', { d: linePath(series.raw), fill: 'none', stroke: '#7a776e', 'stroke-width': 1, 'stroke-opacity': 0.5, 'stroke-dasharray': '2 3' }));
   }
 
+  // Comparison line (e.g. predicted vs actual) — dashed deep-gold, behind main.
+  if (series.cmp && series.cmp.some((p) => p.v != null)) {
+    svg.appendChild(el('path', { d: linePath(series.cmp), fill: 'none', stroke: GOLD_DEEP, 'stroke-width': 1.8, 'stroke-dasharray': '5 4', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  }
+
   // Main line
   svg.appendChild(el('path', { d: linePath(series.line), fill: 'none', stroke: GOLD, 'stroke-width': 2.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', style: 'filter:drop-shadow(0 0 6px rgba(255,204,0,0.35))' }));
 
@@ -219,8 +224,12 @@ function lineChart(container, series, opts = {}) {
     if (!best) return;
     cross.setAttribute('x1', x(best.t)); cross.setAttribute('x2', x(best.t)); cross.setAttribute('visibility', 'visible');
     marker.setAttribute('cx', x(best.t)); marker.setAttribute('cy', y(best.v)); marker.setAttribute('visibility', 'visible');
+    const cmpRow = best.cmpV != null
+      ? `<div class="r" style="color:var(--gold-deep)">pred <span>${num(best.cmpV)}</span> ${opts.unit || ''}${best.err != null ? ` · Δ${best.err >= 0 ? '+' : ''}${num(best.err)}` : ''}</div>`
+      : '';
     tip.innerHTML = `<div class="t">${fmtStamp.format(new Date(best.t))} IST</div>` +
-      `<div class="r"><span class="g">${num(best.v)}</span> ${opts.unit || ''}${best.imputed ? ' · imputed' : ''}${best.band ? ` <span class="t">(${num(best.band.lo)}–${num(best.band.hi)})</span>` : ''}</div>`;
+      `<div class="r"><span class="g">${num(best.v)}</span> ${opts.unit || ''}${best.imputed ? ' · imputed' : ''}${best.band ? ` <span class="t">(${num(best.band.lo)}–${num(best.band.hi)})</span>` : ''}</div>` +
+      cmpRow;
     tip.style.left = ev.clientX + 'px';
     tip.style.top = (rect.top + y(best.v)) + 'px';
     tip.classList.add('on'); tip.setAttribute('aria-hidden', 'false');
@@ -442,10 +451,52 @@ async function loadOverview() {
   }
 }
 
+function renderMetrics(m) {
+  const unit = UNITS[state.pollutant];
+  const cells = [
+    ['MAE', num(m.mae), unit, 'Mean absolute error — average miss, in pollutant units'],
+    ['RMSE', num(m.rmse), unit, 'Root mean squared error — penalises big misses'],
+    ['MAPE', m.mape != null ? num(m.mape) : '—', '%', 'Mean absolute percentage error'],
+    ['Coverage', m.coverage != null ? num(m.coverage, 0) : '—', '%', 'Share of actuals that fell inside the uncertainty band'],
+  ];
+  $('#acc-metrics').innerHTML = cells.map(([k, v, u, t]) =>
+    `<div class="acc-metric" title="${t}"><span class="k">${k}</span><span class="v tnum">${v}<span class="u">${u}</span></span></div>`).join('');
+}
+
+async function loadAccuracy() {
+  const sid = state.stationId, pol = state.pollutant;
+  const c = $('#acc-chart');
+  stateBlock(c, 'loading', 'Scoring forecast…', '');
+  $('#acc-metrics').innerHTML = ''; $('#acc-legend').hidden = true; $('#acc-badge').textContent = '';
+  try {
+    const res = await api(`/stations/${sid}/accuracy?pollutant=${encodeURIComponent(pol)}&hours=48`);
+    if (state.stationId !== sid || state.pollutant !== pol) return;
+    const m = res.metrics;
+    if (!m.n) {
+      stateBlock(c, 'empty', 'No scored forecasts yet', `No past ${LABELS[pol]} forecasts have matching readings here. Run the backtest job to populate.`);
+      return;
+    }
+    renderMetrics(m);
+    $('#acc-badge').textContent = `${m.n} hrs scored`;
+    const line = res.points.map((p) => ({
+      t: new Date(p.target_time), v: p.actual, cmpV: p.yhat,
+      err: (p.yhat != null && p.actual != null) ? (p.yhat - p.actual) : null,
+    }));
+    const cmp = res.points.map((p) => ({ t: new Date(p.target_time), v: p.yhat }));
+    const band = res.points.filter((p) => p.yhat_lower != null && p.yhat_upper != null)
+      .map((p) => ({ t: new Date(p.target_time), lo: p.yhat_lower, hi: p.yhat_upper }));
+    lineChart(c, { line, cmp, band }, { unit: UNITS[pol], ariaLabel: `Predicted vs actual ${LABELS[pol]} over the backtest window` });
+    $('#acc-legend').hidden = false;
+  } catch (e) {
+    stateBlock(c, 'error', 'Could not score forecast', e.message, loadAccuracy);
+  }
+}
+
 function refreshData() {
   loadLive();
   loadHistory();
   loadForecast();
+  loadAccuracy();
 }
 
 // ---- Selection handlers -----------------------------------------------------

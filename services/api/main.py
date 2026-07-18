@@ -10,6 +10,7 @@ Docs: http://localhost:8000/docs
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -31,6 +32,9 @@ from psycopg.rows import dict_row
 from services.api.cleaning import clean_series, impute_hour_of_day
 from services.api.db import pool
 from services.api.models import (
+    AccuracyMetrics,
+    AccuracyPoint,
+    AccuracyResult,
     ForecastPoint,
     HistoryPoint,
     LiveReading,
@@ -233,6 +237,74 @@ async def station_forecast(
                 (station_id, pollutant, station_id, pollutant),
             )
             return [ForecastPoint(**row) for row in await cur.fetchall()]
+
+
+@app.get("/stations/{station_id}/accuracy", response_model=AccuracyResult)
+async def accuracy(
+    station_id: int,
+    pollutant: str = Query("PM2.5", description="pollutant to score"),
+    hours: int = Query(48, ge=1, le=720, description="how far back to score"),
+) -> AccuracyResult:
+    """Score past forecasts for a station against the readings that arrived.
+
+    For every past target hour, takes the most recent forecast vintage and joins
+    it to the actual reading at that hour, then reports MAE / RMSE / MAPE and the
+    uncertainty-band coverage. Populated by the backtest job (services.ml.backtest);
+    real forecasts are scored automatically as they age into the past.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            if not await _station_exists(cur, station_id):
+                raise HTTPException(status_code=404, detail="station not found")
+            await cur.execute(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (target_time)
+                           target_time, yhat, yhat_lower, yhat_upper
+                    FROM forecasts
+                    WHERE station_id = %s AND pollutant = %s
+                      AND target_time <= now()
+                      AND target_time >= now() - make_interval(hours => %s)
+                    ORDER BY target_time, generated_at DESC
+                )
+                SELECT l.target_time, l.yhat, l.yhat_lower, l.yhat_upper,
+                       r.value AS actual
+                FROM latest l
+                JOIN readings r
+                  ON r.station_id = %s AND r.pollutant = %s
+                 AND r.measured_at = l.target_time
+                ORDER BY l.target_time
+                """,
+                (station_id, pollutant, hours, station_id, pollutant),
+            )
+            rows = await cur.fetchall()
+
+    points = [AccuracyPoint(**row) for row in rows]
+    return AccuracyResult(metrics=_score(rows), points=points)
+
+
+def _score(rows: list[dict]) -> AccuracyMetrics:
+    """Aggregate error metrics over rows that have both a prediction and an actual."""
+    pairs = [(r["yhat"], r["actual"], r["yhat_lower"], r["yhat_upper"])
+             for r in rows if r["yhat"] is not None and r["actual"] is not None]
+    n = len(pairs)
+    if n == 0:
+        return AccuracyMetrics(n=0, mae=None, rmse=None, mape=None, coverage=None)
+
+    abs_err = [abs(y - a) for y, a, _, _ in pairs]
+    sq_err = [(y - a) ** 2 for y, a, _, _ in pairs]
+    pct_err = [abs(y - a) / abs(a) for y, a, _, _ in pairs if a]
+    in_band = [
+        1 for y, a, lo, hi in pairs
+        if lo is not None and hi is not None and lo <= a <= hi
+    ]
+    return AccuracyMetrics(
+        n=n,
+        mae=round(sum(abs_err) / n, 2),
+        rmse=round(math.sqrt(sum(sq_err) / n), 2),
+        mape=round(100 * sum(pct_err) / len(pct_err), 1) if pct_err else None,
+        coverage=round(100 * len(in_band) / n, 1),
+    )
 
 
 async def _hour_of_day_averages(cur, station_id: int, pollutant: str) -> dict[int, float]:

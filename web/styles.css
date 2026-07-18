@@ -219,6 +219,26 @@ main { padding: 20px 0 80px; }
 .legend span { display: inline-flex; align-items: center; gap: 7px; }
 .legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
 .legend i.band { height: 10px; opacity: 0.35; }
+.legend i.dash { background: repeating-linear-gradient(90deg, var(--gold-deep) 0 4px, transparent 4px 7px) !important; }
+
+/* ---------- Model-accuracy panel ---------- */
+.acc-badge {
+  font-family: 'Fira Code', monospace; font-size: 0.72rem; color: var(--gold);
+  border: 1px solid var(--line-strong); border-radius: 999px; padding: 4px 12px;
+  white-space: nowrap;
+}
+.acc-metrics {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.acc-metric {
+  background: var(--surface-1); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 4px; cursor: help;
+}
+.acc-metric .k { font-size: 0.7rem; color: var(--text-dim); letter-spacing: 0.08em; text-transform: uppercase; }
+.acc-metric .v { font-family: 'Fira Code', monospace; font-size: 1.5rem; font-weight: 600; color: var(--white); }
+.acc-metric .v .u { font-size: 0.72rem; color: var(--text-dim); margin-left: 4px; font-weight: 400; }
 
 /* ---------- Station map ---------- */
 .map-card #map svg { width: 100%; height: auto; }
