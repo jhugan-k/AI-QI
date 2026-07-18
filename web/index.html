@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="description" content="AI-QI — live air-quality readings and 24-hour forecasts for Delhi monitoring stations." />
+  <title>AI-QI — Air Quality Intelligence</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- ---------- Top bar ---------- -->
+  <header class="topbar">
+    <div class="wrap">
+      <div class="brand">
+        <!-- wind / air icon (Lucide-style) -->
+        <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9.59 4.59A2 2 0 1 1 11 8H2" />
+          <path d="M17.73 7.73A2.5 2.5 0 1 1 19.5 12H2" />
+          <path d="M12.59 19.41A2 2 0 1 0 14 16H2" />
+        </svg>
+        <div>
+          <div class="name">AI<b>·</b>QI</div>
+          <div class="sub">Air Quality Intelligence</div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <div class="live-dot"><i></i> Live · Delhi</div>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <!-- ---------- Controls ---------- -->
+    <section class="controls" aria-label="Station and pollutant selection">
+      <div class="field">
+        <label for="station">Monitoring station</label>
+        <div class="select">
+          <select id="station" aria-label="Select monitoring station"></select>
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        </div>
+      </div>
+      <div class="field">
+        <label>Pollutant</label>
+        <div class="seg" id="pollutants" role="group" aria-label="Select pollutant"></div>
+      </div>
+    </section>
+  </div>
+
+  <main class="wrap">
+    <!-- ---------- AQI hero ---------- -->
+    <section class="card hero card--pad-lg" id="hero" aria-live="polite">
+      <div class="gauge" id="gauge">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <circle cx="60" cy="60" r="52" fill="none" stroke="var(--surface-2)" stroke-width="10" />
+          <circle id="gauge-arc" cx="60" cy="60" r="52" fill="none" stroke="var(--gold)" stroke-width="10"
+                  stroke-linecap="round" stroke-dasharray="0 999" style="transition: stroke-dasharray .6s ease" />
+        </svg>
+        <div class="center">
+          <div class="val" id="gauge-val">—</div>
+          <div class="unit" id="gauge-unit">µg/m³</div>
+        </div>
+      </div>
+      <div class="hero-meta">
+        <div class="cat" id="hero-cat">
+          <span id="hero-cat-label">Awaiting data</span>
+          <span class="bar" id="hero-bar" aria-hidden="true"></span>
+        </div>
+        <p class="desc" id="hero-desc">Select a station to load its latest readings.</p>
+        <div class="stamp" id="hero-stamp"></div>
+      </div>
+    </section>
+
+    <!-- ---------- Live pollutant tiles ---------- -->
+    <section aria-label="Latest pollutant readings">
+      <div class="grid tiles" id="tiles"></div>
+    </section>
+
+    <!-- ---------- Station map ---------- -->
+    <section class="card full map-card" aria-label="Station map">
+      <div class="panel-head">
+        <div>
+          <h2 id="map-title">Delhi network</h2>
+          <div class="hint" id="map-hint">Latest reading per station · click to select</div>
+        </div>
+        <div class="map-scale" id="map-scale" aria-hidden="true"></div>
+      </div>
+      <div class="chart" id="map"></div>
+    </section>
+
+    <!-- ---------- Chart panels ---------- -->
+    <section class="grid panels">
+      <div class="card full">
+        <div class="panel-head">
+          <div>
+            <h2 id="history-title">History</h2>
+            <div class="hint" id="history-hint">Recent measured readings</div>
+          </div>
+          <div class="toggles" role="group" aria-label="History options">
+            <button id="tg-clean" aria-pressed="false" title="Validate, de-outlier and smooth the series">Clean</button>
+            <button id="tg-impute" aria-pressed="false" title="Fill gaps from the station's hour-of-day history">Impute</button>
+          </div>
+        </div>
+        <div class="chart" id="history-chart"></div>
+        <div class="legend" id="history-legend" hidden></div>
+      </div>
+
+      <div class="card full">
+        <div class="panel-head">
+          <div>
+            <h2>24-hour forecast</h2>
+            <div class="hint">Prophet model · shaded band = uncertainty</div>
+          </div>
+        </div>
+        <div class="chart" id="forecast-chart"></div>
+        <div class="legend" id="forecast-legend" hidden>
+          <span><i style="background:var(--gold)"></i> Predicted</span>
+          <span><i class="band" style="background:var(--gold-deep)"></i> Uncertainty band</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>AI·QI — air-quality intelligence for Delhi. Data: CPCB · OpenWeather.</span>
+      <span class="mono" id="foot-stamp"></span>
+    </div>
+  </footer>
+
+  <div class="tip" id="tip" role="status" aria-hidden="true"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

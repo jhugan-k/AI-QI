@@ -13,6 +13,7 @@ import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -24,11 +25,18 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 
 from services.api.cleaning import clean_series, impute_hour_of_day
 from services.api.db import pool
-from services.api.models import ForecastPoint, HistoryPoint, LiveReading, Station
+from services.api.models import (
+    ForecastPoint,
+    HistoryPoint,
+    LiveReading,
+    Station,
+    StationLatest,
+)
 
 IST = ZoneInfo("Asia/Kolkata")   # pollution's daily cycle is local-time based
 ML_SERVICE_URL = os.environ.get("ML_SERVICE_URL", "http://localhost:8001")
@@ -64,6 +72,33 @@ async def list_stations() -> list[Station]:
                 "FROM stations ORDER BY name"
             )
             return [Station(**row) for row in await cur.fetchall()]
+
+
+@app.get("/overview", response_model=list[StationLatest])
+async def overview(
+    pollutant: str = Query("PM2.5", description="pollutant to summarise per station"),
+) -> list[StationLatest]:
+    """Every station with its single latest reading of one pollutant.
+
+    One round-trip for the whole map: DISTINCT ON (station) + ORDER BY newest
+    picks the latest matching reading per station. LEFT JOIN keeps stations that
+    have no reading for this pollutant (value/measured_at come back null).
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT ON (s.id)
+                       s.id, s.name, s.latitude, s.longitude,
+                       r.value, r.measured_at
+                FROM stations s
+                LEFT JOIN readings r
+                       ON r.station_id = s.id AND r.pollutant = %s
+                ORDER BY s.id, r.measured_at DESC NULLS LAST
+                """,
+                (pollutant,),
+            )
+            return [StationLatest(**row) for row in await cur.fetchall()]
 
 
 async def _station_exists(cur, station_id: int) -> bool:
@@ -216,3 +251,12 @@ async def _hour_of_day_averages(cur, station_id: int, pollutant: str) -> dict[in
         (station_id, pollutant),
     )
     return {row["hod"]: float(row["avg_value"]) for row in await cur.fetchall()}
+
+
+# --- Static web dashboard (Part 4) -------------------------------------------
+# Served same-origin so the frontend's fetch() calls hit /stations, /history,
+# etc. with no CORS. Mounted LAST and at "/" so the greedy catch-all doesn't
+# shadow the explicit API routes above (Starlette matches routes in order).
+_WEB_DIR = Path(__file__).resolve().parents[2] / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="web")

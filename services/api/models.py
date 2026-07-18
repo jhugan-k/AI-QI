@@ -21,6 +21,16 @@ class LiveReading(BaseModel):
     measured_at: datetime
 
 
+class StationLatest(BaseModel):
+    """A station plus its single latest reading of one pollutant — powers the map."""
+    id: int
+    name: str
+    latitude: float | None
+    longitude: float | None
+    value: float | None            # latest reading; null if the station has none
+    measured_at: datetime | None
+
+
 class HistoryPoint(BaseModel):
     measured_at: datetime
     value: float | None            # cleaned/imputed value when requested, else the raw reading
