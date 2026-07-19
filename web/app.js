@@ -23,8 +23,16 @@ const BREAKPOINTS = {
   NH3:     [[0, 200, 0, 50], [201, 400, 51, 100], [401, 800, 101, 200], [801, 1200, 201, 300], [1201, 1800, 301, 400], [1801, 2000, 401, 500]],
 };
 
-// Mono-gold severity ramp (deep → bright): worse air = brighter, hotter gold.
-const GOLD_RAMP = ['#8a6d00', '#b38f00', '#d4a900', '#ffcc00', '#ffdb4d', '#ffeb99'];
+// Official CPCB National AQI category colours (Good → Severe), aligned to CATEGORIES.
+// These are the health semaphore — kept distinct from the gold brand accent so a
+// glance at a dot reads as "how bad", not "on brand".
+const AQI_COLORS = ['#55a84f', '#a3c853', '#f5d000', '#f29305', '#e93f33', '#af2d24'];
+const NODATA_COLOR = '#7a776e';
+// Colour for a category name (or a subIndex result). Grey when unknown/no data.
+const catColor = (cat) => {
+  const i = CATEGORIES.indexOf(cat);
+  return i >= 0 ? AQI_COLORS[i] : NODATA_COLOR;
+};
 const CAT_DESC = {
   Good: 'Air quality is healthy. Minimal impact on health.',
   Satisfactory: 'Acceptable air quality; minor breathing discomfort possible for the sensitive.',
@@ -68,6 +76,9 @@ const state = {
   clean: false,
   impute: false,
   overview: [],   // cached /overview rows for the current pollutant (powers the map)
+  live: [],       // latest per-pollutant readings for the selected station (advisory)
+  ranking: [],    // cached /ranking rows (worst-air sidebar)
+  forecastSummary: null,  // { pollutant, lo, hi, peakAt } for the foresight line
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -252,6 +263,8 @@ function renderHero(reading) {
   if (!reading || reading.value == null) {
     gv.textContent = '—';
     arc.setAttribute('stroke-dasharray', '0 999');
+    arc.setAttribute('stroke', GOLD);
+    $('#hero-cat-label').style.color = '';
     $('#hero-cat-label').textContent = 'No data';
     $('#hero-desc').textContent = `No recent ${LABELS[state.pollutant]} reading for this station.`;
     $('#hero-stamp').textContent = '';
@@ -267,10 +280,16 @@ function renderHero(reading) {
 
   const cat = si ? si.category : '—';
   const level = si ? si.level : 0;
-  $('#hero-cat-label').textContent = si ? `${cat}` : 'Reading';
+  const color = si ? catColor(cat) : GOLD;
+  arc.setAttribute('stroke', color);                    // gauge ring in the tier colour
+  const lbl = $('#hero-cat-label');
+  lbl.textContent = si ? `${cat}` : 'Reading';
+  lbl.style.color = si ? color : '';
   $('#hero-desc').textContent = si ? `AQI sub-index ${si.subIndex}. ${CAT_DESC[cat]}` : 'Latest reading.';
   $('#hero-stamp').textContent = `Measured ${fmtStamp.format(new Date(reading.measured_at))} IST`;
-  bar.innerHTML = CATEGORIES.map((_, i) => `<span class="${i < level ? 'on' : ''}"></span>`).join('');
+  // Each lit segment carries its own tier colour, so the bar ramps green→maroon.
+  bar.innerHTML = CATEGORIES.map((_, i) =>
+    `<span class="${i < level ? 'on' : ''}"${i < level ? ` style="background:${AQI_COLORS[i]};box-shadow:0 0 6px ${AQI_COLORS[i]}66"` : ''}></span>`).join('');
 }
 
 function renderTiles(readings) {
@@ -285,10 +304,11 @@ function renderTiles(readings) {
     card.type = 'button';
     card.style.cursor = 'pointer';
     card.setAttribute('aria-pressed', String(p === state.pollutant));
+    const si = has ? subIndex(p, r.value) : null;
     card.innerHTML =
       `<span class="k">${LABELS[p]}</span>` +
       `<span class="v tnum">${has ? num(r.value, r.value >= 100 ? 0 : 1) : '—'}<span class="u">${UNITS[p]}</span></span>` +
-      `<span class="k" style="text-transform:none;letter-spacing:0">${has && subIndex(p, r.value) ? subIndex(p, r.value).category : 'no data'}</span>`;
+      `<span class="k cat-chip" style="text-transform:none;letter-spacing:0${si ? `;color:${catColor(si.category)}` : ''}">${si ? si.category : 'no data'}</span>`;
     if (p === state.pollutant) card.style.borderColor = 'var(--gold-deep)';
     card.addEventListener('click', () => selectPollutant(p));
     box.appendChild(card);
@@ -304,11 +324,15 @@ async function loadLive() {
   try {
     const readings = await api(`/stations/${sid}/live`);
     if (state.stationId !== sid) return; // stale
+    state.live = readings;
     renderTiles(readings);
     renderHero(readings.find((r) => r.pollutant === state.pollutant) || null);
+    renderAdvisory();
   } catch (e) {
     $('#tiles').innerHTML = '';
     renderHero(null);
+    state.live = [];
+    renderAdvisory();
     $('#hero-desc').textContent = `Could not load live readings (${e.message}).`;
   }
 }
@@ -354,7 +378,17 @@ async function loadForecast() {
   try {
     const rows = await api(`/stations/${sid}/forecast?pollutant=${encodeURIComponent(pol)}`);
     if (state.stationId !== sid || state.pollutant !== pol) return;
-    if (!rows.length) { stateBlock(c, 'empty', 'No forecast available', `The model has not produced a ${LABELS[pol]} forecast for this station yet.`); return; }
+    if (!rows.length) {
+      state.forecastSummary = null; renderAdvisory();
+      stateBlock(c, 'empty', 'No forecast available', `The model has not produced a ${LABELS[pol]} forecast for this station yet.`); return;
+    }
+    // Summarise for the advisory's forward-looking "foresight" line.
+    const ys = rows.map((r) => r.yhat).filter((v) => v != null);
+    if (ys.length) {
+      const peak = rows.reduce((a, r) => (r.yhat != null && (a == null || r.yhat > a.yhat)) ? r : a, null);
+      state.forecastSummary = { pollutant: pol, lo: Math.min(...ys), hi: Math.max(...ys), peakAt: new Date(peak.target_time) };
+      renderAdvisory();
+    }
     const line = rows.map((r) => ({ t: new Date(r.target_time), v: r.yhat, band: { lo: r.yhat_lower, hi: r.yhat_upper } }));
     const band = rows.filter((r) => r.yhat_lower != null && r.yhat_upper != null)
       .map((r) => ({ t: new Date(r.target_time), lo: r.yhat_lower, hi: r.yhat_upper }));
@@ -365,21 +399,94 @@ async function loadForecast() {
   }
 }
 
-// Renders the map's severity legend (once).
+// Renders the map's AQI category legend (once). One labelled swatch per tier.
 function buildMapScale() {
   const box = $('#map-scale');
-  box.innerHTML = `<b>Good</b><span class="ramp">${GOLD_RAMP.map((c) => `<i style="background:${c}"></i>`).join('')}</span><b>Severe</b>`;
+  box.innerHTML = CATEGORIES.map((cat, i) =>
+    `<span class="tier"><i style="background:${AQI_COLORS[i]}"></i>${cat}</span>`).join('');
 }
 
-// SVG geo-scatter of all stations, positioned by lat/long, sized/lit by AQI.
+// Map entry point. Uses a real Leaflet slippy map when the library is available,
+// and degrades to the dependency-free SVG scatter if the CDN was blocked.
+let leafletMap = null;      // the L.Map instance (created once)
+let markerLayer = null;     // L.LayerGroup holding the station dots (cleared per render)
+let mapFitted = false;      // fit-to-stations only on first populate
+
 function renderMap() {
+  $('#map-title').textContent = `Delhi network · ${LABELS[state.pollutant]}`;
   const c = $('#map');
   const rows = state.overview;
-  $('#map-title').textContent = `Delhi network · ${LABELS[state.pollutant]}`;
 
-  if (!rows.length) { stateBlock(c, 'loading', 'Loading map…', ''); return; }
+  // No data yet: show a loading block, but never paint over a live Leaflet map.
+  if (!rows.length) { if (!leafletMap) stateBlock(c, 'loading', 'Loading map…', ''); return; }
   const located = rows.filter((s) => s.latitude != null && s.longitude != null);
-  if (!located.length) { stateBlock(c, 'empty', 'No station coordinates', 'Stations have no latitude/longitude to plot.'); return; }
+  if (!located.length) {
+    if (!leafletMap) stateBlock(c, 'empty', 'No station coordinates', 'Stations have no latitude/longitude to plot.');
+    return;
+  }
+
+  if (window.L) {
+    try { renderMapLeaflet(c, located); return; }
+    catch (e) {
+      console.error('Leaflet map failed — falling back to SVG scatter', e);
+      leafletMap = null; markerLayer = null;   // let the SVG path own the container
+    }
+  }
+  renderMapSVG(c, located);
+}
+
+// Real geographic map: CartoDB dark tiles under AQI-coloured station markers.
+function renderMapLeaflet(c, located) {
+  if (!leafletMap) {
+    c.innerHTML = '';                       // clear any prior state block
+    leafletMap = L.map(c, { zoomControl: true, attributionControl: true, scrollWheelZoom: false })
+      .setView([28.61, 77.22], 10);         // Delhi, refined by fitBounds below
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    }).addTo(leafletMap);
+    markerLayer = L.layerGroup().addTo(leafletMap);
+    // Click-to-zoom back in, since wheel-zoom is off to avoid page-scroll hijack.
+    leafletMap.on('dblclick', () => leafletMap.zoomIn());
+  }
+
+  markerLayer.clearLayers();
+  const latlngs = [];
+  for (const s of located) {
+    const si = subIndex(state.pollutant, s.value);
+    const color = si ? catColor(si.category) : NODATA_COLOR;
+    const selected = s.id === state.stationId;
+    latlngs.push([s.latitude, s.longitude]);
+
+    if (selected) {                         // gold halo under the selected station
+      L.circleMarker([s.latitude, s.longitude], {
+        radius: 13, color: GOLD, weight: 1.5, opacity: 0.9, fill: false, interactive: false,
+      }).addTo(markerLayer);
+    }
+
+    const dot = L.circleMarker([s.latitude, s.longitude], {
+      radius: si ? 7 : 5.5,
+      color: '#000', weight: 1.2,
+      fillColor: color, fillOpacity: si ? 0.95 : 0,
+    }).addTo(markerLayer);
+
+    dot.bindTooltip(
+      `<b>${s.name}</b><br>${si ? `${num(s.value)} ${UNITS[state.pollutant]} · <span style="color:${color}">${si.category}</span>` : 'no data'}`,
+      { direction: 'top', offset: [0, -6], className: 'map-tt' },
+    );
+    dot.on('click', () => { $('#station').value = String(s.id); selectStation(s.id); });
+  }
+
+  if (!mapFitted && latlngs.length) {
+    leafletMap.fitBounds(latlngs, { padding: [28, 28], maxZoom: 12 });
+    mapFitted = true;
+  }
+  // Container may have been hidden/resized while off-screen; make Leaflet recompute.
+  setTimeout(() => leafletMap && leafletMap.invalidateSize(), 0);
+}
+
+// Fallback: dependency-free SVG geo-scatter, positioned by lat/long, coloured by AQI.
+function renderMapSVG(c, located) {
 
   const W = 760, H = 420, pad = 34;
   const lats = located.map((s) => s.latitude), lons = located.map((s) => s.longitude);
@@ -412,7 +519,7 @@ function renderMap() {
 
     let dot;
     if (si) {
-      const color = GOLD_RAMP[si.level - 1];
+      const color = AQI_COLORS[si.level - 1];
       dot = el('circle', {
         class: 'map-dot', cx: x, cy: y, r: 7, fill: color, stroke: '#000', 'stroke-width': 1.2,
         style: `filter:drop-shadow(0 0 ${2 + si.level}px ${color})`,
@@ -448,6 +555,102 @@ async function loadOverview() {
     renderMap();
   } catch (e) {
     if (!state.overview.length) stateBlock($('#map'), 'error', 'Could not load map', e.message, loadOverview);
+  }
+}
+
+// ---- Sidebar: actionable advisory + worst-area ranking ---------------------
+
+// Actionable guidance per AQI category — the "so what do I do" layer.
+const ADVICE = {
+  Good: ['Air is clean — ideal for outdoor activity and exercise.', 'Windows can stay open to ventilate.'],
+  Satisfactory: ['Fine for normal outdoor activity for most people.', 'Unusually sensitive individuals may notice minor throat or eye irritation.'],
+  Moderate: ['Sensitive groups (asthma, heart/lung conditions, children, elderly) should ease off prolonged outdoor exertion.', 'Everyone else can carry on as normal.'],
+  Poor: ['Cut back on prolonged or heavy outdoor exertion.', 'Sensitive groups: wear an N95 outdoors and keep reliever medication handy.', 'Prefer indoor workouts today.'],
+  'Very Poor': ['Avoid outdoor exercise; keep any outings short.', 'Wear an N95 / FFP2 mask outdoors.', 'Run an air purifier indoors and keep windows shut.', 'Sensitive groups should stay indoors.'],
+  Severe: ['Stay indoors as much as possible.', 'N95 / FFP2 mask is essential if you must go out.', 'Run an air purifier; seal windows and doors.', 'Avoid all outdoor physical activity — this affects everyone, not just sensitive groups.'],
+};
+
+// Pollutants excluded from the overall roll-up — see aqi.py OVERALL_EXCLUDE:
+// the feed's CO values are mis-united (implausible as mg/m³) and would saturate
+// every station to Severe. Kept in sync with the backend /ranking rollup.
+const OVERALL_EXCLUDE = new Set(['CO']);
+
+// Overall AQI (max sub-index across the station's live readings) + dominant pollutant.
+function overallFromLive(readings) {
+  let best = null;
+  for (const r of readings) {
+    if (OVERALL_EXCLUDE.has(r.pollutant)) continue;
+    const si = subIndex(r.pollutant, r.value);
+    if (!si) continue;
+    if (!best || si.subIndex > best.subIndex) best = { ...si, pollutant: r.pollutant, value: r.value };
+  }
+  return best;
+}
+
+function renderAdvisory() {
+  const box = $('#advisory-body');
+  if (!box) return;
+  const o = overallFromLive(state.live);
+  if (!o) {
+    box.innerHTML = '<div class="advisory-empty">No live readings for this station yet — advisory will appear once data arrives.</div>';
+    return;
+  }
+  const color = catColor(o.category);
+  const tips = (ADVICE[o.category] || []).map((t) => `<li>${t}</li>`).join('');
+
+  // Forward-looking "foresight" line, when a forecast for the selected pollutant exists.
+  const f = state.forecastSummary;
+  const foresight = f
+    ? `<div class="advisory-foresight"><span class="fs-k">Next 24h · ${LABELS[f.pollutant]}</span>
+         <span class="fs-v">${num(f.lo, 0)}–${num(f.hi, 0)} ${UNITS[f.pollutant]}</span>
+         <span class="fs-t">peak ~${fmtHour.format(f.peakAt)} IST</span></div>`
+    : '';
+
+  box.innerHTML =
+    `<div class="advisory-status">
+       <span class="advisory-badge" style="color:${color};border-color:${color}66;background:${color}14">${o.category}</span>
+       <span class="advisory-driver">Driven by <b>${LABELS[o.pollutant]}</b> · ${num(o.value)} ${UNITS[o.pollutant]} <span class="mono">(AQI ${o.subIndex})</span></span>
+     </div>
+     ${foresight}
+     <ul class="advisory-tips">${tips}</ul>`;
+}
+
+function renderRanking() {
+  const box = $('#rank-list');
+  if (!box) return;
+  if (!state.ranking.length) {
+    box.innerHTML = '<li class="rank-empty">No station readings yet.</li>';
+    return;
+  }
+  const worst = state.ranking[0]?.aqi || 1;
+  box.innerHTML = state.ranking.map((s, i) => {
+    const color = catColor(s.category);
+    const sel = s.id === state.stationId ? ' on' : '';
+    const w = Math.max(6, Math.round((s.aqi / Math.max(worst, s.aqi)) * 100));
+    return `<li class="rank-row${sel}" data-id="${s.id}" role="button" tabindex="0"
+                title="${s.name} — AQI ${s.aqi} (${s.category}), worst pollutant ${LABELS[s.pollutant] || s.pollutant}">
+        <span class="rank-num">${i + 1}</span>
+        <span class="rank-main">
+          <span class="rank-name">${s.name}</span>
+          <span class="rank-bar"><i style="width:${w}%;background:${color}"></i></span>
+        </span>
+        <span class="rank-aqi" style="color:${color}">${s.aqi}</span>
+      </li>`;
+  }).join('');
+  box.querySelectorAll('.rank-row').forEach((li) => {
+    const go = () => selectStation(Number(li.dataset.id));
+    li.addEventListener('click', go);
+    li.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+  });
+}
+
+async function loadRanking() {
+  try {
+    const rows = await api('/ranking');
+    state.ranking = rows;
+    renderRanking();
+  } catch (e) {
+    if (!state.ranking.length) $('#rank-list').innerHTML = `<li class="rank-empty">Could not load ranking (${e.message}).</li>`;
   }
 }
 
@@ -512,8 +715,43 @@ function selectPollutant(p) {
 
 function selectStation(id) {
   state.stationId = Number(id);
+  syncStationSelect();       // make sure the dropdown reflects the choice
   renderMap();               // move the highlight (cheap, uses cached overview)
+  renderRanking();           // move the highlight in the worst-air list (cached)
   refreshData();
+}
+
+// Rebuild the station <select> to the stations whose name matches `query`.
+// Selection state is untouched — only the visible option list narrows, turning
+// the dropdown into a short pick-list for the typed name. Returns the matches.
+function renderStationOptions(query = '') {
+  const sel = $('#station');
+  const q = query.trim().toLowerCase();
+  const matches = q ? state.stations.filter((s) => s.name.toLowerCase().includes(q)) : state.stations;
+  sel.innerHTML = matches.length
+    ? matches.map((s) => `<option value="${s.id}">${s.name}</option>`).join('')
+    : '<option disabled>No matching station</option>';
+  if (state.stationId != null && matches.some((s) => s.id === state.stationId)) {
+    sel.value = String(state.stationId);
+  }
+  const count = $('#search-count');
+  if (count) count.textContent = q ? `${matches.length} of ${state.stations.length}` : '';
+  return matches;
+}
+
+// Ensure the currently-selected station is visible+selected in the dropdown.
+// If a search filter hid it (e.g. the user picked it from the map), drop the
+// filter so the selection is always reflected.
+function syncStationSelect() {
+  const sel = $('#station');
+  if (state.stationId == null || !sel.options.length) return;
+  const present = [...sel.options].some((o) => o.value === String(state.stationId));
+  if (!present) {
+    const search = $('#station-search');
+    if (search) search.value = '';
+    renderStationOptions('');
+  }
+  sel.value = String(state.stationId);
 }
 
 // ---- Bootstrap --------------------------------------------------------------
@@ -541,6 +779,7 @@ function autoRefresh() {
   if (state.stationId == null) return;
   loadLive();
   loadOverview();
+  loadRanking();
 }
 
 async function init() {
@@ -573,10 +812,21 @@ async function init() {
       stateBlock($('#forecast-chart'), 'empty', 'No stations registered', '');
       return;
     }
-    sel.innerHTML = stations.map((s) => `<option value="${s.id}">${s.name}</option>`).join('');
+    renderStationOptions();
     sel.addEventListener('change', (e) => selectStation(e.target.value));
+
+    const search = $('#station-search');
+    search.addEventListener('input', () => renderStationOptions(search.value));
+    search.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const matches = renderStationOptions(search.value);
+      if (matches.length) selectStation(matches[0].id);   // Enter jumps to the first match
+    });
+
     selectStation(stations[0].id);
     loadOverview();
+    loadRanking();
   } catch (e) {
     sel.innerHTML = '<option>Unavailable</option>'; sel.disabled = true;
     stateBlock($('#map'), 'error', 'Backend unreachable', '');

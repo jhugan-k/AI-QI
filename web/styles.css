@@ -122,6 +122,30 @@ a { color: var(--gold); text-decoration: none; }
 .select select:hover { border-color: var(--gold-deep); }
 .select select:focus-visible { border-color: var(--gold); box-shadow: var(--glow-soft); }
 .select .chev { position: absolute; right: 12px; pointer-events: none; color: var(--gold); }
+.select select:disabled { color: var(--text-dim); }
+
+/* Station picker: search box stacked above the dropdown */
+.field--station { flex: 1 1 260px; }
+.station-picker { display: flex; flex-direction: column; gap: 8px; }
+.station-picker .select select { width: 100%; min-width: 0; }
+.search { position: relative; display: flex; align-items: center; }
+.search .search-ico { position: absolute; left: 12px; color: var(--gold-deep); pointer-events: none; }
+.search input {
+  width: 100%; box-sizing: border-box;
+  background: var(--surface-1); color: var(--text);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  padding: 10px 88px 10px 34px;
+  font-family: inherit; font-size: 0.9rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.search input::placeholder { color: var(--text-dim); }
+.search input:hover { border-color: var(--gold-deep); }
+.search input:focus-visible { outline: none; border-color: var(--gold); box-shadow: var(--glow-soft); }
+.search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.search-count {
+  position: absolute; right: 12px; pointer-events: none;
+  font-family: 'Fira Code', monospace; font-size: 0.68rem; color: var(--text-dim);
+}
 
 /* Pollutant segmented control */
 .seg { display: inline-flex; flex-wrap: wrap; gap: 6px; }
@@ -201,7 +225,10 @@ main { padding: 20px 0 80px; }
 .panel-head h2 { font-size: 1.05rem; }
 .panel-head .hint { color: var(--text-dim); font-size: 0.8rem; }
 .chart { width: 100%; }
-.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+/* Direct child only: our hand-rolled charts + the SVG map fallback append <svg>
+   straight into the container. Scoping to `> svg` keeps Leaflet's own nested SVG
+   overlay panes (where the map markers live) from being force-sized to 100%. */
+.chart > svg { display: block; width: 100%; height: auto; overflow: visible; }
 
 /* toggles inside panel */
 .toggles { display: inline-flex; gap: 6px; }
@@ -241,12 +268,98 @@ main { padding: 20px 0 80px; }
 .acc-metric .v .u { font-size: 0.72rem; color: var(--text-dim); margin-left: 4px; font-weight: 400; }
 
 /* ---------- Station map ---------- */
-.map-card #map svg { width: 100%; height: auto; }
+.map-card #map > svg { width: 100%; height: auto; }   /* SVG fallback only (direct child) */
+/* Leaflet manages the size of its own nested SVG panes — never force them. */
+.leaflet-pane svg, .leaflet-container svg { width: auto; height: auto; max-width: none; }
+/* Leaflet slippy map needs an explicit height; SVG fallback fills the same box. */
+.map-card #map { height: 460px; border-radius: var(--radius-sm); overflow: hidden; }
+.map-card #map.leaflet-container { background: #eaeaea; }   /* light, to match Positron tiles while they load */
 .map-dot { cursor: pointer; transition: r 0.15s, stroke-width 0.15s; }
-.map-scale { display: inline-flex; align-items: center; gap: 8px; font-size: 0.72rem; color: var(--text-dim); }
-.map-scale .ramp { display: inline-flex; gap: 3px; }
-.map-scale .ramp i { width: 16px; height: 8px; border-radius: 2px; display: inline-block; }
-.map-scale b { color: var(--text-muted); font-weight: 500; letter-spacing: 0.04em; }
+
+/* AQI category legend: one labelled swatch per tier */
+.map-scale { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 0.7rem; color: var(--text-muted); }
+.map-scale .tier { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.map-scale .tier i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+/* Leaflet dark-theme overrides so the map reads as part of the dashboard */
+.leaflet-control-attribution {
+  background: rgba(255,255,255,0.75) !important; color: #555 !important;
+  font-size: 0.62rem !important;
+}
+.leaflet-control-attribution a { color: #666 !important; }
+.leaflet-bar a {
+  background: var(--surface-2) !important; color: var(--gold) !important;
+  border-bottom-color: var(--line) !important;
+}
+.leaflet-bar a:hover { background: var(--surface-1) !important; }
+.leaflet-tooltip.map-tt {
+  background: var(--surface-2); border: 1px solid var(--line-strong); color: var(--white);
+  border-radius: 8px; padding: 6px 9px; font-size: 0.76rem; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+}
+.leaflet-tooltip.map-tt b { color: var(--gold); font-weight: 600; }
+.leaflet-tooltip.map-tt::before { border-top-color: var(--line-strong); }
+
+/* ---------- Layout: 3/4 main column + 1/4 right rail ---------- */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr);
+  gap: 24px; align-items: start;
+}
+.main-col { min-width: 0; }   /* let charts/map shrink instead of overflowing the grid */
+.side-col {
+  display: flex; flex-direction: column; gap: 20px;
+  position: sticky; top: 16px; min-width: 0;
+}
+@media (max-width: 1024px) {
+  .layout { grid-template-columns: 1fr; }
+  .side-col { position: static; }
+}
+
+/* Actionable insights card */
+.advisory-status { display: flex; flex-direction: column; gap: 8px; }
+.advisory-badge {
+  align-self: flex-start; font-size: 0.8rem; font-weight: 600;
+  padding: 4px 12px; border: 1px solid; border-radius: 999px; letter-spacing: 0.02em;
+}
+.advisory-driver { font-size: 0.85rem; color: var(--text-muted); }
+.advisory-driver b { color: var(--text); }
+.advisory-driver .mono { font-family: 'Fira Code', monospace; font-size: 0.76rem; color: var(--text-dim); }
+.advisory-foresight {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  margin-top: 14px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.advisory-foresight .fs-k { width: 100%; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
+.advisory-foresight .fs-v { font-family: 'Fira Code', monospace; font-weight: 600; color: var(--gold); }
+.advisory-foresight .fs-t { font-size: 0.76rem; color: var(--text-muted); }
+.advisory-tips { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 11px; }
+.advisory-tips li { position: relative; padding-left: 20px; font-size: 0.86rem; color: var(--text-muted); line-height: 1.42; }
+.advisory-tips li::before { content: ''; position: absolute; left: 3px; top: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--gold-deep); }
+.advisory-empty { color: var(--text-dim); font-size: 0.88rem; line-height: 1.45; }
+
+/* Worst-air ranking list */
+.rank-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column;
+  max-height: 620px; overflow-y: auto;
+}
+.rank-row {
+  display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px;
+  padding: 9px 6px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: background 0.15s, border-color 0.15s;
+}
+.rank-row:hover { background: var(--surface-2); }
+.rank-row.on { background: rgba(255,204,0,0.08); border-color: var(--line-strong); }
+.rank-row:focus-visible { outline: none; border-color: var(--gold); }
+.rank-num { font-family: 'Fira Code', monospace; font-size: 0.72rem; color: var(--text-dim); text-align: center; }
+.rank-main { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.rank-name { font-size: 0.82rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rank-bar { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.rank-bar i { display: block; height: 100%; border-radius: 2px; }
+.rank-aqi { font-family: 'Fira Code', monospace; font-weight: 600; font-size: 0.95rem; }
+.rank-empty { color: var(--text-dim); font-size: 0.85rem; padding: 8px 6px; }
+.rank-list::-webkit-scrollbar { width: 8px; }
+.rank-list::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
 
 /* ---------- States: loading / empty / error ---------- */
 .state {

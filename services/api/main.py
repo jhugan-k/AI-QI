@@ -29,6 +29,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 
+from services.api.aqi import overall_aqi
 from services.api.cleaning import clean_series, impute_hour_of_day
 from services.api.db import pool
 from services.api.models import (
@@ -46,9 +47,31 @@ IST = ZoneInfo("Asia/Kolkata")   # pollution's daily cycle is local-time based
 ML_SERVICE_URL = os.environ.get("ML_SERVICE_URL", "http://localhost:8001")
 
 
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "db" / "schema.sql"
+
+
+async def _apply_schema() -> None:
+    """Create tables if missing. schema.sql is fully `CREATE ... IF NOT EXISTS`,
+    so this is a safe no-op after the first boot. Runs on startup because the
+    Render free tier has no pre-deploy/migration hook — the app self-provisions
+    its own schema against a fresh managed Postgres."""
+    if not _SCHEMA_PATH.exists():
+        return
+    sql = _SCHEMA_PATH.read_text(encoding="utf-8")
+    # Strip `--` line comments FIRST, so a ';' inside a comment can't split a
+    # statement, then split on ';' (safe: the schema has no procedure bodies).
+    # psycopg's extended protocol runs one statement per execute.
+    no_comments = "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
+    statements = [s.strip() for s in no_comments.split(";") if s.strip()]
+    async with pool.connection() as conn:
+        for stmt in statements:
+            await conn.execute(stmt)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await pool.open()
+    await _apply_schema()
     yield
     await pool.close()
 
@@ -103,6 +126,58 @@ async def overview(
                 (pollutant,),
             )
             return [StationLatest(**row) for row in await cur.fetchall()]
+
+
+@app.get("/ranking")
+async def ranking() -> list[dict]:
+    """Stations ranked by OVERALL air quality, worst first.
+
+    Overall AQI is the CPCB definition: the max sub-index across a station's
+    latest reading of each pollutant (the single worst pollutant sets the
+    headline). One query pulls the latest non-null value per (station, pollutant)
+    with DISTINCT ON; the AQI roll-up is done in Python via services.api.aqi.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT ON (s.id, r.pollutant)
+                       s.id, s.name, s.latitude, s.longitude,
+                       r.pollutant, r.value, r.measured_at
+                FROM stations s
+                JOIN readings r ON r.station_id = s.id
+                WHERE r.value IS NOT NULL
+                ORDER BY s.id, r.pollutant, r.measured_at DESC
+                """
+            )
+            rows = await cur.fetchall()
+
+    # Group latest per-pollutant readings by station, then roll up to overall AQI.
+    stations: dict[int, dict] = {}
+    for row in rows:
+        st = stations.setdefault(row["id"], {
+            "id": row["id"], "name": row["name"],
+            "latitude": row["latitude"], "longitude": row["longitude"],
+            "readings": {}, "measured_at": row["measured_at"],
+        })
+        st["readings"][row["pollutant"]] = row["value"]
+        if row["measured_at"] and (st["measured_at"] is None or row["measured_at"] > st["measured_at"]):
+            st["measured_at"] = row["measured_at"]
+
+    ranked = []
+    for st in stations.values():
+        agg = overall_aqi(st["readings"])
+        if agg is None:
+            continue
+        aqi, category, dominant = agg
+        ranked.append({
+            "id": st["id"], "name": st["name"],
+            "latitude": st["latitude"], "longitude": st["longitude"],
+            "aqi": aqi, "category": category, "pollutant": dominant,
+            "value": st["readings"][dominant], "measured_at": st["measured_at"],
+        })
+    ranked.sort(key=lambda s: s["aqi"], reverse=True)   # worst air on top
+    return ranked
 
 
 async def _station_exists(cur, station_id: int) -> bool:
