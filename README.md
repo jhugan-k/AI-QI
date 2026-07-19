@@ -4,6 +4,7 @@ A full-stack air-quality forecaster platform for **Delhi**: it ingests live poll
 from India's official CPCB feed, cleans and stores them, forecasts the next 24 hours per
 station with per-pollutant ML models, scores those forecasts against reality, and
 serves everything through a web dashboard.
+
 ---
 
 ## Features
@@ -62,20 +63,20 @@ flowchart LR
 
 ## Data model
 
-| Table       | Shape | Purpose |
-|-------------|-------|---------|
-| `stations`  | one row per CPCB station | name (stable id), city, lat/lon |
-| `readings`  | **long** — one row per `(station, pollutant, timestamp)` | mirrors the CPCB payload; deduped by a unique constraint |
-| `weather`   | **wide** — one row per snapshot | temp/humidity/pressure/wind/clouds; becomes Prophet regressors |
-| `forecasts` | one row per prediction | `target_time` (hour forecast) + `generated_at` (vintage) so past forecasts can be scored |
+- **`stations`** — one row per CPCB station: name (stable id), city, lat/lon.
+- **`readings`** — *long* format, one row per `(station, pollutant, timestamp)`;
+  mirrors the CPCB payload and is deduped by a unique constraint.
+- **`weather`** — *wide* format, one row per snapshot: temp/humidity/pressure/wind/clouds;
+  these become Prophet regressors.
+- **`forecasts`** — one row per prediction: `target_time` (the hour forecast) plus
+  `generated_at` (the vintage), so past forecasts can be scored.
 
-The schema is entirely `CREATE ... IF NOT EXISTS` and self-applies on API startup. 
-any empty Postgres works with no migration step.
+The schema is entirely `CREATE ... IF NOT EXISTS` and self-applies on API startup.
+Any empty Postgres works with no migration step.
 
 ### Forecasting locally
 
 Prophet needs ~100 readings per series before a model is meaningful. At the current stage it's ingesting data and working passively.
-
 
 ---
 
@@ -83,17 +84,15 @@ Prophet needs ~100 readings per series before a model is meaningful. At the curr
 
 Read-only, JSON, same-origin with the dashboard. Interactive docs at `/docs`.
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | liveness + DB connectivity |
-| `GET /stations` | all monitoring stations |
-| `GET /overview?pollutant=PM2.5` | every station + its latest reading of one pollutant (map) |
-| `GET /ranking` | stations ranked by overall AQI, worst first |
-| `GET /stations/{id}/live` | latest reading per pollutant |
-| `GET /stations/{id}/history?pollutant=&hours=&clean=&impute=` | time series, optionally cleaned/imputed |
-| `GET /stations/{id}/forecast?pollutant=` | latest stored 24h forecast |
-| `GET /stations/{id}/forecast/live?pollutant=` | fresh forecast via the ML microservice |
-| `GET /stations/{id}/accuracy?pollutant=&hours=` | MAE / RMSE / MAPE + band coverage |
+- **`GET /health`** — liveness + DB connectivity.
+- **`GET /stations`** — all monitoring stations.
+- **`GET /overview?pollutant=PM2.5`** — every station + its latest reading of one pollutant (map).
+- **`GET /ranking`** — stations ranked by overall AQI, worst first.
+- **`GET /stations/{id}/live`** — latest reading per pollutant.
+- **`GET /stations/{id}/history?pollutant=&hours=&clean=&impute=`** — time series, optionally cleaned/imputed.
+- **`GET /stations/{id}/forecast?pollutant=`** — latest stored 24h forecast.
+- **`GET /stations/{id}/forecast/live?pollutant=`** — fresh forecast via the ML microservice.
+- **`GET /stations/{id}/accuracy?pollutant=&hours=`** — MAE / RMSE / MAPE + band coverage.
 
 ## Tech stack
 
@@ -101,4 +100,3 @@ Read-only, JSON, same-origin with the dashboard. Interactive docs at `/docs`.
 **ML** Prophet · pandas
 **Frontend** vanilla JS · hand-rolled SVG charts · Leaflet (with SVG fallback)
 **Infra** Render (web) · GitHub Actions (ingest + forecast) · Docker (local DB)
-
