@@ -1,0 +1,8 @@
+# ML training/forecasting deps. Used by the daily-forecast GitHub Action, which
+# runs `python -m services.ml.batch` on a hosted runner (Prophet is memory-heavy
+# and never runs on the Render web tier — training is decoupled from serving).
+prophet==1.3.0
+pandas==3.0.3
+numpy==2.5.1
+psycopg[binary]==3.2.3
+python-dotenv==1.0.1

@@ -1,0 +1,41 @@
+# Daily Prophet retrain + forecast, writing into the deployed Postgres.
+#
+# Training is decoupled from serving: the Render web tier only READS forecasts
+# from the DB (fits 512 MB), while the heavy Prophet fit runs here on a hosted
+# runner (~16 GB RAM). Every trainable (station, pollutant) — those with >= 100
+# readings — gets a fresh 24h forecast; a backtest re-scores the models so the
+# /accuracy panel stays current. Real stations become trainable automatically
+# once the hourly ingest (ingest.yml) has accumulated ~100 hours of history.
+#
+# Requires one repo secret (Settings -> Secrets and variables -> Actions):
+#   DATABASE_URL   the managed DB's connection string (same one the app uses)
+
+name: daily-forecast
+
+on:
+  schedule:
+    - cron: "0 21 * * *"     # 21:00 UTC = 02:30 IST, after the overnight readings
+  workflow_dispatch: {}
+
+concurrency:
+  group: forecast
+  cancel-in-progress: false
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r services/ml/requirements.txt
+      - name: Retrain + write 24h forecasts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m services.ml.batch
+      - name: Backtest (refresh accuracy scores)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m services.ml.backtest
