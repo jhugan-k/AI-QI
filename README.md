@@ -97,6 +97,9 @@ Read-only, JSON, same-origin with the dashboard. Interactive docs at `/docs`.
 ## Tech stack
 
 **Backend** FastAPI · psycopg 3 (async) · PostgreSQL 16 · httpx
+
 **ML** Prophet · pandas
+
 **Frontend** vanilla JS · hand-rolled SVG charts · Leaflet (with SVG fallback)
+
 **Infra** Render (web) · GitHub Actions (ingest + forecast) · Docker (local DB)
