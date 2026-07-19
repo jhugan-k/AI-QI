@@ -1,0 +1,39 @@
+# Render Blueprint — one-click provision of AI-QI's public deploy.
+#
+# Provisions a managed Postgres + the FastAPI web service (which also serves the
+# dashboard from web/). Fits the free tier: the web service is light (FastAPI +
+# psycopg + httpx, no Prophet/pandas), so it stays well under the 512 MB cap.
+#
+# The ML service and Prophet batch are intentionally NOT deployed here (memory
+# heavy). Hourly CPCB ingest runs as a free GitHub Action (.github/workflows/
+# ingest.yml) against this database, not a Render cron (crons aren't free-tier).
+#
+# Deploy: Render Dashboard -> New -> Blueprint -> connect this repo -> Apply.
+# Then set the CPCB_API_KEY secret on the web service (and as a GitHub secret,
+# together with the database's External URL, for the ingest Action).
+
+databases:
+  - name: aiqi-db
+    databaseName: aiqi
+    user: aiqi
+    plan: free
+    region: singapore        # closest free region to India; switch if unavailable
+
+services:
+  - type: web
+    name: aiqi-web
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: "pip install -r services/api/requirements.txt"
+    startCommand: "python -m services.api.run"
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL          # internal connection string from the managed DB
+        fromDatabase:
+          name: aiqi-db
+          property: connectionString
+      - key: CPCB_API_KEY          # secret — set in the Render dashboard, not in git
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12.5"

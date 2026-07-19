@@ -11,6 +11,7 @@ Run:  python -m services.api.run
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 if sys.platform == "win32":
@@ -21,4 +22,7 @@ import uvicorn  # noqa: E402 — must come after the policy is set
 from services.api.main import app  # noqa: E402
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # Bind 0.0.0.0 and honour $PORT so the same entrypoint works locally and on
+    # a PaaS host (Render/Railway/etc.) that injects the port to listen on.
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

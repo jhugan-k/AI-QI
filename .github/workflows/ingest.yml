@@ -1,0 +1,39 @@
+# Free hourly CPCB ingest into the deployed Postgres.
+#
+# Render free tier has no cron/worker, so the hourly pull runs here instead: a
+# scheduled GitHub Action installs the tiny ingest deps and runs the same
+# `python -m services.ingest.ingest` used locally, pointed at the production DB.
+#
+# Requires two repo secrets (Settings -> Secrets and variables -> Actions):
+#   DATABASE_URL   the managed DB's EXTERNAL connection string (from Render)
+#   CPCB_API_KEY   your data.gov.in API key
+#
+# Trigger the first run manually from the Actions tab (workflow_dispatch) to
+# populate stations + the first readings; it then runs every hour.
+
+name: hourly-ingest
+
+on:
+  schedule:
+    - cron: "5 * * * *"     # hourly at :05 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r services/ingest/requirements.txt
+      - name: Run CPCB ingest
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CPCB_API_KEY: ${{ secrets.CPCB_API_KEY }}
+        run: python -m services.ingest.ingest
