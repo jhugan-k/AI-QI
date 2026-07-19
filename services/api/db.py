@@ -14,7 +14,9 @@ from psycopg_pool import AsyncConnectionPool
 
 load_dotenv()
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# .strip() guards against a trailing newline/space sneaking in when the value is
+# pasted into a dashboard env-var field — libpq rejects e.g. "channel_binding=require\n".
+DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL not set — copy .env.example to .env")
 
