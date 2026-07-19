@@ -105,25 +105,38 @@ def impute_hour_of_day(
     hours: list[int],
     values: list[float | None],
     hour_averages: dict[int, float],
+    neighbour_averages: dict[int, float] | None = None,
 ) -> tuple[list[float | None], list[bool]]:
-    """Fill None gaps with the station's typical value for that hour-of-day.
+    """Fill None gaps with the typical value for that hour-of-day.
 
     Pollution has a strong daily cycle, so a gap at 08:00 is best guessed from
     what this station usually reads at 08:00. `hour_averages` maps IST hour
     (0-23) -> mean value, supplied by the caller from the DB.
 
+    Two-stage fallback:
+      1. the station's OWN hour-of-day average (best — same location)
+      2. a NEIGHBOUR station's hour-of-day average (`neighbour_averages`), used
+         only for hours the station itself has never reported. A newly-installed
+         station, or one offline for a whole hour-of-day, has no own-history for
+         that hour; the nearest station is the next-best spatial proxy.
+
     Returns (filled_values, imputed_flags) where imputed_flags[i] is True iff
-    position i was a gap that we filled. A gap with no historical average for
-    its hour stays None (nothing to fill it with) — neighbour-station
-    imputation would be the next fallback (documented, not yet implemented).
+    position i was a gap that we filled (from either stage). A gap with no
+    average from either source stays None (nothing to fill it with).
     """
     filled: list[float | None] = []
     flags: list[bool] = []
     for h, v in zip(hours, values):
-        if v is None and h in hour_averages:
+        if v is not None:
+            filled.append(v)
+            flags.append(False)
+        elif h in hour_averages:
             filled.append(hour_averages[h])
             flags.append(True)
+        elif neighbour_averages and h in neighbour_averages:
+            filled.append(neighbour_averages[h])
+            flags.append(True)
         else:
-            filled.append(v)
+            filled.append(None)
             flags.append(False)
     return filled, flags

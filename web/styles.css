@@ -254,7 +254,9 @@ main { padding: 20px 0 80px; }
   gap: 12px; text-align: center; color: var(--text-muted);
   min-height: 220px; padding: 32px;
 }
-.state svg { color: var(--gold-deep); }
+/* Keep state icons at their intrinsic size — the global `.chart svg { width:100% }`
+   rule would otherwise stretch these 34px spinners/icons to the full panel width. */
+.state svg { color: var(--gold-deep); width: auto; height: auto; }
 .state .title { color: var(--white); font-weight: 600; }
 .state .msg { font-size: 0.9rem; max-width: 40ch; }
 .skeleton {

@@ -21,6 +21,13 @@ from prophet import Prophet
 
 from services.api.cleaning import validate
 from services.ml.regressors import add_event_regressors
+from services.ml.weather_features import (
+    WEATHER_REGRESSORS,
+    attach_weather,
+    has_weather_signal,
+    hourly_climatology,
+    weather_history,
+)
 
 load_dotenv()
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)  # quiet Stan output
@@ -64,7 +71,32 @@ def load_history(station_id: int, pollutant: str) -> pd.DataFrame:
         if v is not None
     ]
     df = pd.DataFrame(data, columns=["ds", "y"])
-    return add_event_regressors(df)   # attach stubble + diwali columns
+    df = add_event_regressors(df)                  # stubble + diwali columns
+    return _attach_station_weather(df, station_id)  # + weather regressor columns
+
+
+def _attach_station_weather(df: pd.DataFrame, station_id: int) -> pd.DataFrame:
+    """Fill the weather regressor columns for any frame (history OR future)."""
+    wdf = weather_history(station_id)
+    return attach_weather(df, wdf, hourly_climatology(wdf))
+
+
+def build_model(df: pd.DataFrame) -> Prophet:
+    """Fit a Prophet model with the event regressors plus any weather regressor
+    that actually varies in this frame. Centralised so train, batch and backtest
+    all fit identically."""
+    model = Prophet(
+        daily_seasonality=True,
+        weekly_seasonality=True,
+        yearly_seasonality=False,     # let the explicit regressors own Oct-Nov, not a yearly curve
+    )
+    model.add_regressor("stubble")    # farm-fire season indicator
+    model.add_regressor("diwali")     # Diwali spike + lingering window (see regressors.py)
+    for col in WEATHER_REGRESSORS:    # wind/temp/humidity — only if present with signal
+        if col in df.columns and df[col].nunique() > 1:
+            model.add_regressor(col)
+    model.fit(df)
+    return model
 
 
 def train(station_id: int, pollutant: str = "PM2.5") -> tuple[Prophet, int]:
@@ -75,15 +107,7 @@ def train(station_id: int, pollutant: str = "PM2.5") -> tuple[Prophet, int]:
             f"only {len(df)} usable points for station {station_id}/{pollutant}; "
             f"need >= {MIN_TRAIN_POINTS}"
         )
-
-    model = Prophet(
-        daily_seasonality=True,
-        weekly_seasonality=True,
-        yearly_seasonality=False,     # let the explicit regressors own Oct-Nov, not a yearly curve
-    )
-    model.add_regressor("stubble")    # farm-fire season indicator
-    model.add_regressor("diwali")     # Diwali spike + lingering window (see regressors.py)
-    model.fit(df)
+    model = build_model(df)
 
     os.makedirs(MODEL_DIR, exist_ok=True)
     with open(artifact_path(station_id, pollutant), "wb") as f:
@@ -91,10 +115,17 @@ def train(station_id: int, pollutant: str = "PM2.5") -> tuple[Prophet, int]:
     return model, len(df)
 
 
-def forecast(model: Prophet, hours: int = 24) -> pd.DataFrame:
-    """Next `hours` of predictions with uncertainty bounds."""
+def forecast(model: Prophet, hours: int, station_id: int) -> pd.DataFrame:
+    """Next `hours` of predictions with uncertainty bounds.
+
+    The future frame needs every regressor the model was trained on: the event
+    flags (deterministic) and, if the model uses weather, future weather filled
+    from the station's hour-of-day climatology.
+    """
     future = model.make_future_dataframe(periods=hours, freq="h")
-    future = add_event_regressors(future)   # regressor must be present for the future too
+    future = add_event_regressors(future)          # deterministic — known for any date
+    if any(r in model.extra_regressors for r in WEATHER_REGRESSORS):
+        future = _attach_station_weather(future, station_id)
     fc = model.predict(future)
     return fc[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(hours)
 
@@ -108,6 +139,9 @@ def _seasonal_demo(model: Prophet) -> None:
     }
     probe = pd.DataFrame({"ds": pd.to_datetime(list(cases.values()))})
     probe = add_event_regressors(probe)
+    for col in WEATHER_REGRESSORS:                # constant-fill weather so the demo probe predicts
+        if col in model.extra_regressors:
+            probe[col] = model.extra_regressors[col]["mu"]
     pred = model.predict(probe)
     print("\nlearned seasonal effects (component contributions):")
     print(f"  {'case':<28} {'yhat':>7} {'stubble':>8} {'diwali':>8}")
@@ -124,7 +158,7 @@ def main() -> None:
     print(f"trained station {station_id}/{pollutant} on {n} points")
     print(f"saved -> {artifact_path(station_id, pollutant)}")
 
-    fc = forecast(model, hours=24)
+    fc = forecast(model, hours=24, station_id=station_id)
     print(f"\n24h forecast: yhat {fc['yhat'].min():.0f}-{fc['yhat'].max():.0f} ug/m3")
     _seasonal_demo(model)
 

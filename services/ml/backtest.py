@@ -22,11 +22,9 @@ import os
 import pandas as pd
 import psycopg
 from dotenv import load_dotenv
-from prophet import Prophet
 
-from services.ml.batch import STATIONS, POLLUTANT, store_forecast
-from services.ml.regressors import add_event_regressors
-from services.ml.train import MIN_TRAIN_POINTS, load_history
+from services.ml.batch import store_forecast, trainable_series
+from services.ml.train import MIN_TRAIN_POINTS, build_model, load_history
 
 load_dotenv()
 
@@ -40,9 +38,9 @@ def backtest_station(conn, station_id: int, pollutant: str) -> int:
 
     Returns the number of prediction rows written (0 if skipped).
     """
-    df = load_history(station_id, pollutant)          # ds (IST-naive), y, regressors
+    df = load_history(station_id, pollutant)          # ds, y, event + weather regressors
     if df.empty:
-        print(f"station {station_id}: no history — skipped")
+        print(f"station {station_id}/{pollutant}: no history — skipped")
         return 0
 
     cutoff = df["ds"].max() - pd.Timedelta(hours=HOLDOUT_HOURS)
@@ -50,26 +48,24 @@ def backtest_station(conn, station_id: int, pollutant: str) -> int:
     holdout = df[df["ds"] > cutoff]
 
     if len(train_df) < MIN_TRAIN_POINTS:
-        print(f"station {station_id}: only {len(train_df)} pre-cutoff points "
+        print(f"station {station_id}/{pollutant}: only {len(train_df)} pre-cutoff points "
               f"(need {MIN_TRAIN_POINTS}) — skipped")
         return 0
     if holdout.empty:
-        print(f"station {station_id}: empty holdout window — skipped")
+        print(f"station {station_id}/{pollutant}: empty holdout window — skipped")
         return 0
 
-    # Same model config as production training (train.py), fit on the truncated set.
-    model = Prophet(daily_seasonality=True, weekly_seasonality=True, yearly_seasonality=False)
-    model.add_regressor("stubble")
-    model.add_regressor("diwali")
-    model.fit(train_df)
+    # Identical model path to production training, fit on the truncated set only.
+    model = build_model(train_df)
 
-    # Predict exactly the held-out timestamps so the scoring join lines up.
-    probe = add_event_regressors(holdout[["ds"]].copy())
+    # The holdout rows already carry every regressor column (from load_history),
+    # incl. the ACTUAL weather for those hours — an honest test. Drop y for predict.
+    probe = holdout.drop(columns=["y"])
     pred = model.predict(probe)[["ds", "yhat", "yhat_lower", "yhat_upper"]]
 
     stored = store_forecast(conn, station_id, pollutant, pred, BACKTEST_VERSION)
     conn.commit()
-    print(f"station {station_id}: trained on {len(train_df)} pts, "
+    print(f"station {station_id}/{pollutant}: trained on {len(train_df)} pts, "
           f"backtested {stored} points over the last {HOLDOUT_HOURS}h")
     return stored
 
@@ -78,12 +74,14 @@ def run() -> None:
     if not DATABASE_URL:
         raise SystemExit("DATABASE_URL not set")
     with psycopg.connect(DATABASE_URL) as conn:
-        for station_id in STATIONS:
+        series = trainable_series(conn)
+        print(f"backtest: {len(series)} trainable (station, pollutant) series")
+        for station_id, pollutant in series:
             try:
-                backtest_station(conn, station_id, POLLUTANT)
-            except Exception as exc:  # noqa: BLE001 — one bad station shouldn't stop the run
+                backtest_station(conn, station_id, pollutant)
+            except Exception as exc:  # noqa: BLE001 — one bad series shouldn't stop the run
                 conn.rollback()
-                print(f"station {station_id}: FAILED — {exc}")
+                print(f"station {station_id}/{pollutant}: FAILED — {exc}")
 
 
 if __name__ == "__main__":

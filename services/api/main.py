@@ -179,9 +179,16 @@ async def history(
                 ]
 
             hour_averages = await _hour_of_day_averages(cur, station_id, pollutant)
+            neighbour_id = await _nearest_station(cur, station_id, pollutant)
+            neighbour_averages = (
+                await _hour_of_day_averages(cur, neighbour_id, pollutant)
+                if neighbour_id is not None else {}
+            )
 
     ist_hours = [r["measured_at"].astimezone(IST).hour for r in rows]
-    filled, flags = impute_hour_of_day(ist_hours, cleaned, hour_averages)
+    filled, flags = impute_hour_of_day(
+        ist_hours, cleaned, hour_averages, neighbour_averages
+    )
     return [
         HistoryPoint(measured_at=r["measured_at"], value=v, raw=r["value"], imputed=f)
         for r, v, f in zip(rows, filled, flags)
@@ -228,9 +235,11 @@ async def station_forecast(
                 SELECT target_time, yhat, yhat_lower, yhat_upper
                 FROM forecasts
                 WHERE station_id = %s AND pollutant = %s
-                  AND generated_at = (
+                  AND target_time > now()          -- a forecast is about the future;
+                  AND generated_at = (             -- excludes past-dated backtest vintages
                       SELECT max(generated_at) FROM forecasts
                       WHERE station_id = %s AND pollutant = %s
+                        AND target_time > now()
                   )
                 ORDER BY target_time
                 """,
@@ -305,6 +314,33 @@ def _score(rows: list[dict]) -> AccuracyMetrics:
         mape=round(100 * sum(pct_err) / len(pct_err), 1) if pct_err else None,
         coverage=round(100 * len(in_band) / n, 1),
     )
+
+
+async def _nearest_station(cur, station_id: int, pollutant: str) -> int | None:
+    """Closest OTHER station (by coordinates) that has data for this pollutant.
+
+    Used as the spatial fallback for imputation. Squared Euclidean distance on
+    lat/long is fine at city scale (Delhi); no need for great-circle accuracy.
+    Returns None if the station has no coordinates or no candidate neighbour.
+    """
+    await cur.execute(
+        """
+        SELECT n.id
+        FROM stations s
+        JOIN stations n ON n.id <> s.id
+                        AND n.latitude IS NOT NULL AND n.longitude IS NOT NULL
+        WHERE s.id = %s AND s.latitude IS NOT NULL AND s.longitude IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM readings r
+              WHERE r.station_id = n.id AND r.pollutant = %s AND r.value IS NOT NULL
+          )
+        ORDER BY (n.latitude - s.latitude) ^ 2 + (n.longitude - s.longitude) ^ 2
+        LIMIT 1
+        """,
+        (station_id, pollutant),
+    )
+    row = await cur.fetchone()
+    return row["id"] if row else None
 
 
 async def _hour_of_day_averages(cur, station_id: int, pollutant: str) -> dict[int, float]:

@@ -85,6 +85,33 @@ def test_impute_does_not_touch_present_values():
     assert flags == [False]
 
 
+def test_impute_falls_back_to_neighbour():
+    hours = [3, 4]
+    values = [None, None]
+    own = {4: 40.0}                       # own history only for hour 4
+    neighbour = {3: 33.0, 4: 999.0}       # neighbour has hour 3
+    filled, flags = impute_hour_of_day(hours, values, own, neighbour)
+    assert filled == [33.0, 40.0]         # hour 3 from neighbour, hour 4 from OWN (preferred)
+    assert flags == [True, True]
+
+
+def test_impute_prefers_own_over_neighbour():
+    hours = [8]
+    values = [None]
+    own = {8: 80.0}
+    neighbour = {8: 10.0}
+    filled, _ = impute_hour_of_day(hours, values, own, neighbour)
+    assert filled == [80.0]               # own average wins when both exist
+
+
+def test_impute_gap_stays_when_neither_source_has_hour():
+    hours = [2]
+    values = [None]
+    filled, flags = impute_hour_of_day(hours, values, {}, {5: 1.0})
+    assert filled == [None]               # neighbour has hour 5, not hour 2
+    assert flags == [False]
+
+
 def test_clean_series_end_to_end():
     # impossible value, a spike, and noise together
     vals = [50.0, -3.0, 55.0, 60.0, 9999.0, 58.0]

@@ -52,7 +52,7 @@ def get_forecast(
     model = _load_model(station_id, pollutant)
     if model is None:
         raise HTTPException(404, f"no model for station {station_id}/{pollutant}; train it first")
-    fc = forecast(model, hours)
+    fc = forecast(model, hours, station_id)
     return [
         {
             "target_time_ist": r["ds"].isoformat(),
