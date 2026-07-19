@@ -1,16 +1,16 @@
 # AI-QI — Air Quality Intelligence
 
-A full-stack air-quality platform for **Delhi**: it ingests live pollution readings
-from India's CPCB feed, cleans and stores them, forecasts the next 24 hours per
+A full-stack air-quality forecaster platform for **Delhi**: it ingests live pollution readings
+from India's official CPCB feed, cleans and stores them, forecasts the next 24 hours per
 station with per-pollutant ML models, scores those forecasts against reality, and
-serves everything through a zero-dependency web dashboard.
+serves everything through a web dashboard.
 ---
 
 ## Features
 
 - **Ingest** — pulls Delhi's hourly readings (PM2.5, PM10, NO₂, SO₂, CO, O₃, NH₃)
   from the CPCB feed on [data.gov.in](https://data.gov.in), plus per-station weather
-  from OpenWeather. Runs every hour without creating duplicates.
+  from OpenWeather.
 - **Clean on read** — validates against physical limits, removes statistical outliers,
   smooths, and optionally imputes gaps from a station's per-hour history (falling
   back to its nearest neighbour station).
