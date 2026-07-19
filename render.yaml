@@ -1,38 +1,32 @@
-# Render Blueprint — one-click provision of AI-QI's public deploy.
+# Render Blueprint — deploys AI-QI's public web service (FastAPI, which also
+# serves the dashboard from web/). Fits the free tier: the web service is light
+# (FastAPI + psycopg + httpx, no Prophet/pandas), well under the 512 MB cap.
 #
-# Provisions a managed Postgres + the FastAPI web service (which also serves the
-# dashboard from web/). Fits the free tier: the web service is light (FastAPI +
-# psycopg + httpx, no Prophet/pandas), so it stays well under the 512 MB cap.
+# The DATABASE is intentionally NOT provisioned here: Render allows only one free
+# Postgres per account. Bring your own — a free Neon/Supabase Postgres, or an
+# existing Render free DB — and paste its connection string as the DATABASE_URL
+# secret. The app self-applies its schema on first boot, so any empty Postgres
+# works. Use the EXTERNAL/pooled URL (SSL) unless the DB is same-region on Render.
 #
 # The ML service and Prophet batch are intentionally NOT deployed here (memory
 # heavy). Hourly CPCB ingest runs as a free GitHub Action (.github/workflows/
-# ingest.yml) against this database, not a Render cron (crons aren't free-tier).
+# ingest.yml) against the same database, not a Render cron (crons aren't free).
 #
 # Deploy: Render Dashboard -> New -> Blueprint -> connect this repo -> Apply.
-# Then set the CPCB_API_KEY secret on the web service (and as a GitHub secret,
-# together with the database's External URL, for the ingest Action).
-
-databases:
-  - name: aiqi-db
-    databaseName: aiqi
-    user: aiqi
-    plan: free
-    region: singapore        # closest free region to India; switch if unavailable
+# Then set the DATABASE_URL and CPCB_API_KEY secrets on the web service.
 
 services:
   - type: web
     name: aiqi-web
     runtime: python
     plan: free
-    region: singapore
+    region: singapore            # closest free region to India; switch if unavailable
     buildCommand: "pip install -r services/api/requirements.txt"
     startCommand: "python -m services.api.run"
     healthCheckPath: /health
     envVars:
-      - key: DATABASE_URL          # internal connection string from the managed DB
-        fromDatabase:
-          name: aiqi-db
-          property: connectionString
+      - key: DATABASE_URL          # secret — paste your Postgres URL (Neon/Supabase/existing Render DB)
+        sync: false
       - key: CPCB_API_KEY          # secret — set in the Render dashboard, not in git
         sync: false
       - key: PYTHON_VERSION
